@@ -5,6 +5,7 @@ package main
 
 import (
     "bufio"
+    "errors"
     "io"
     "io/ioutil"
     // for fatal log messages until the real logger is set up
@@ -171,77 +172,76 @@ func period_scan_dir(sg *zap.SugaredLogger, c <-chan time.Time, dir string, file
     }
 }
 
-func encrypt_file(filename, file_key string) (string, error) {
+
+func encryptor(filename, file_key string, w io.WriteCloser, errc chan<- error) {
+
+    defer w.Close()
+
     f, err := os.Open(filename)
     if err != nil {
-	return "", err
+	errc <-err
+	return
     }
     defer f.Close()
 
-    of, err := ioutil.TempFile("", "spool_s3_")
-    if err != nil {
-	return "", err
-    }
-    defer of.Close()
-    ofilename := of.Name()
 
     // without the buffering we see many small writes by the openpgp
     // writer; however, the read size need no buffering as Copy()
     // already uses ok read sizes (e.g. 32 KiB on F31)
-    ow := bufio.NewWriter(of)
+    ow := bufio.NewWriter(w)
+    defer ow.Flush()
 
     iw, err := openpgp.SymmetricallyEncrypt(ow, []byte(file_key),
             &openpgp.FileHints { IsBinary: true }, nil)
+    defer iw.Close()
     if err != nil {
-	os.Remove(ofilename)
-	return "", err
+	errc <-err
+	return
     }
 
     _, err = io.Copy(iw, f)
     if err != nil {
-	os.Remove(ofilename)
-	return "", err
+	errc <-err
+	return
     }
 
     err = iw.Close()
     if err != nil {
-	os.Remove(ofilename)
-	return "", err
+	errc <-err
+	return
     }
 
     err = f.Close()
     if err != nil {
-	os.Remove(ofilename)
-	return "", err
+	errc <-err
+	return
     }
 
     err = ow.Flush()
     if err != nil {
-	os.Remove(ofilename)
-	return "", err
+	errc <-err
+	return
     }
-    err = of.Close()
+    err = w.Close()
     if err != nil {
-	os.Remove(ofilename)
-	return "", err
+	errc <-err
+	return
     }
-
-    return ofilename, nil
+    errc <-nil
 }
 
-func upload_file(hostname, filename, label string, client *minio.Client, bucket string) (int64, error) {
+func upload_file(hostname string, reader io.Reader, label string, client *minio.Client, bucket string) (int64, error) {
     if ! path.IsAbs(label) {
 	hostname += "/"
     }
 
     name := hostname + label
 
-    n, err := client.FPutObject(bucket, name, filename,
+    n, err := client.PutObject(bucket, name, reader, -1,
             minio.PutObjectOptions{ContentType: "application/octet-stream"})
 
     return n, err
 }
-
 
 func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_key string, client *minio.Client, bucket string) {
     hostname, err := os.Hostname()
@@ -256,29 +256,38 @@ func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_
             return
         }
         sg.Debugw("Spooling next file", "filename", filename)
-	ofilename, err := encrypt_file(filename, file_key)
-	if err != nil {
-	    sg.Warnw("Encryption failed", "filename", filename, "err", err)
-	    continue
-	}
 
-	n, err := upload_file(hostname, ofilename, filename, client, bucket)
+
+	pr, pw := io.Pipe()
+
+	enc_err_c := make(chan error)
+	go encryptor(filename, file_key, pw, enc_err_c)
+
+	n, err := upload_file(hostname, pr, filename, client, bucket)
+
+	// make sure that encryptor terminates in case not real all writes
+	// were consumed by upload_file - if they were this is a NOP
+	pr.CloseWithError(errors.New("upload didn't read everything"))
+
+	enc_err := <-enc_err_c
+	if enc_err != nil {
+	    sg.Errorw("Encryption failed", "filename", filename, "err", enc_err)
+	}
 	if err == nil {
             sg.Infow("Uploaded file:", "filename", filename, "size", n)
-	    err = os.Remove(filename)
-	    if err != nil {
-		sg.Errorw("Removing input file failed", "filename", filename,
-                        "err", err)
-	    }
 	} else {
 	    sg.Errorw("Upload failed", "filename", filename, "err", err)
 	}
 
-	err = os.Remove(ofilename)
-	if err != nil {
-	    sg.Errorw("Removing temp file failed", "filename", ofilename,
-                      "err", err)
+	if err == nil && enc_err == nil {
+	    err = os.Remove(filename)
+            if err != nil {
+                sg.Errorw("Removing input file failed", "filename", filename,
+                          "err", err)
+            }
 	}
+
+
     }
 }
 
