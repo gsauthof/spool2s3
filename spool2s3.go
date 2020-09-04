@@ -327,11 +327,13 @@ func main() {
 
     watcher, err := mk_dir_watcher(dir)
     if err != nil {
-	sg.Fatalf("Creating directory watch failed", "directory", dir, "err", err)
+	sg.Fatalw("Creating directory watch failed", "directory", dir, "err", err)
     }
     defer watcher.Close()
 
     daemon.SdNotify(false, daemon.SdNotifyReady)
+
+    sg.Infow("Watching directory", "directory", dir)
 
     ticker := time.NewTicker(time.Duration(args.Poll_min) * time.Minute)
     defer ticker.Stop()
