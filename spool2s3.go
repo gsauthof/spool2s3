@@ -125,7 +125,7 @@ func create_logger(args *args) *zap.Logger {
     return logger
 }
 
-func start_event_loop(sg *zap.SugaredLogger, watcher *fsnotify.Watcher, filenames chan string) {
+func start_event_loop(sg *zap.SugaredLogger, watcher *fsnotify.Watcher, filenames chan<- string) {
     go func() {
     loop:
         for {
@@ -148,7 +148,7 @@ func start_event_loop(sg *zap.SugaredLogger, watcher *fsnotify.Watcher, filename
     }()
 }
 
-func scan_dir(dir string, filenames chan string) int {
+func scan_dir(dir string, filenames chan<- string) int {
     fs, err := ioutil.ReadDir(dir)
     if err != nil {
         log.Fatal(err)
@@ -162,7 +162,7 @@ func scan_dir(dir string, filenames chan string) int {
     return i
 }
 
-func period_scan_dir(sg *zap.SugaredLogger, c <-chan time.Time, dir string, filenames chan string) {
+func period_scan_dir(sg *zap.SugaredLogger, c <-chan time.Time, dir string, filenames chan<- string) {
     for {
         _, ok := <-c
         if !ok {
@@ -261,7 +261,7 @@ func mk_obj_name(hostname string, label string) string{
     return name
 }
 
-func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_key string, compress bool, client *minio.Client, bucket string) {
+func spooler(sg *zap.SugaredLogger, done chan<- bool, filenames <-chan string, file_key string, compress bool, client *minio.Client, bucket string) {
     hostname, err := os.Hostname()
     if err != nil {
 	sg.Fatalw("Can't get hostname", "err", err)
