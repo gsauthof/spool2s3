@@ -42,4 +42,23 @@ Arguments:
   DIRECTORY:            directory to watch
 ```
 
+## Build Instructions
 
+On Fedora, you can install the build dependencies like this:
+
+```
+dnf install golang-github-coreos-systemd-devel \
+        golang-github-fsnotify-devel \
+        golang-github-jessevdk-flags-devel \
+        golang-github-jsternberg-zap-logfmt-devel \
+        golang-github-minio-devel \
+        golang-uber-zap-devel
+```
+
+On other systems get the dependencies with `go get`.
+
+Build with:
+
+```
+make
+```
