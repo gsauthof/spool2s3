@@ -4,7 +4,7 @@ package main
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import (
-    "bufio"
+    "bytes"
     "errors"
     "io"
     "io/ioutil"
@@ -172,56 +172,55 @@ func period_scan_dir(sg *zap.SugaredLogger, c <-chan time.Time, dir string, file
     }
 }
 
+func encrypt(f io.Reader, filename, file_key string) (*bytes.Buffer, error) {
 
-func encryptor(filename, file_key string, w io.WriteCloser, errc chan<- error) {
-
-    defer w.Close()
-
-    f, err := os.Open(filename)
-    if err != nil {
-	errc <-err
-	return
-    }
-    defer f.Close()
-
-
-    // without the buffering we see many small writes by the openpgp
-    // writer; however, the read size need no buffering as Copy()
-    // already uses ok read sizes (e.g. 32 KiB on F31)
-    ow := bufio.NewWriter(w)
-    defer ow.Flush()
+    ow := new(bytes.Buffer)
 
     iw, err := openpgp.SymmetricallyEncrypt(ow, []byte(file_key),
             &openpgp.FileHints { IsBinary: true }, nil)
-    defer iw.Close()
     if err != nil {
+	return nil, err
+    }
+
+    _, err = io.Copy(iw, f)
+    if err != nil {
+	iw.Close()
+	return nil, err
+    }
+
+    err = iw.Close()
+    if err != nil {
+	return nil, err
+    }
+
+    return ow, nil
+}
+
+
+func encryptor(f io.Reader, file_key string, w *io.PipeWriter, errc chan<- error) {
+    iw, err := openpgp.SymmetricallyEncrypt(w, []byte(file_key),
+            &openpgp.FileHints { IsBinary: true }, nil)
+    if err != nil {
+	w.CloseWithError(err)
 	errc <-err
 	return
     }
 
     _, err = io.Copy(iw, f)
     if err != nil {
+	w.CloseWithError(err)
+	iw.Close()
 	errc <-err
 	return
     }
 
     err = iw.Close()
     if err != nil {
+	w.CloseWithError(err)
 	errc <-err
 	return
     }
 
-    err = f.Close()
-    if err != nil {
-	errc <-err
-	return
-    }
-
-    err = ow.Flush()
-    if err != nil {
-	errc <-err
-	return
-    }
     err = w.Close()
     if err != nil {
 	errc <-err
@@ -230,17 +229,14 @@ func encryptor(filename, file_key string, w io.WriteCloser, errc chan<- error) {
     errc <-nil
 }
 
-func upload_file(hostname string, reader io.Reader, label string, client *minio.Client, bucket string) (int64, error) {
+func mk_obj_name(hostname string, label string) string{
     if ! path.IsAbs(label) {
 	hostname += "/"
     }
 
     name := hostname + label
 
-    n, err := client.PutObject(bucket, name, reader, -1,
-            minio.PutObjectOptions{ContentType: "application/octet-stream"})
-
-    return n, err
+    return name
 }
 
 func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_key string, client *minio.Client, bucket string) {
@@ -248,8 +244,11 @@ func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_
     if err != nil {
 	sg.Fatalw("Can't get hostname", "err", err)
     }
+    put_opts := minio.PutObjectOptions{ContentType: "application/octet-stream"}
 
     for {
+	remove_file := false
+
         filename, ok := <-filenames
         if !ok { // channel closed
             close(done)
@@ -257,34 +256,73 @@ func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_
         }
         sg.Debugw("Spooling next file", "filename", filename)
 
+	name := mk_obj_name(hostname, filename)
 
-	pr, pw := io.Pipe()
-
-	enc_err_c := make(chan error)
-	go encryptor(filename, file_key, pw, enc_err_c)
-
-	n, err := upload_file(hostname, pr, filename, client, bucket)
-
-	// make sure that encryptor terminates in case not real all writes
-	// were consumed by upload_file - if they were this is a NOP
-	pr.CloseWithError(errors.New("upload didn't read everything"))
-
-	enc_err := <-enc_err_c
-	if enc_err != nil {
-	    sg.Errorw("Encryption failed", "filename", filename, "err", enc_err)
+	f, err := os.Open(filename)
+	if err != nil {
+	    sg.Errorw("Can't open file", "filename", filename, "err", err)
+	    continue
 	}
-	if err == nil {
-            sg.Infow("Uploaded file:", "filename", filename, "size", n)
+        st, err := f.Stat()
+	if err != nil  {
+	    sg.Errorw("Can't stat file", "filename", filename, "err", err)
+	    f.Close()
+	    continue
+	}
+
+	// stream if file is large - otherwise the it's better to
+	// encrypt it into a temporary buffer because then we
+	// can use the atomic S3 put with minio which requires much less
+	// memory
+	if st.Size() >= 128 * 1024 * 1024 {
+	    pr, pw := io.Pipe()
+
+	    enc_err_c := make(chan error)
+	    go encryptor(f, file_key, pw, enc_err_c)
+
+            n, err := client.PutObject(bucket, name, pr, -1, put_opts)
+
+	    // make sure that encryptor terminates in case not real all writes
+	    // were consumed by upload_file - if they were this is a NOP
+	    pr.CloseWithError(errors.New("upload didn't read everything"))
+
+	    enc_err := <-enc_err_c
+	    if enc_err != nil {
+		sg.Errorw("Encryption failed", "filename", filename, "err", enc_err)
+	    }
+	    if err == nil {
+		sg.Infow("Uploaded file:", "filename", filename, "size", n)
+		remove_file = true
+	    } else {
+		sg.Errorw("Upload failed", "filename", filename, "err", err)
+	    }
+
+        } else {
+	    br, err := encrypt(f, filename, file_key)
+	    if err != nil {
+		sg.Errorw("Encryption failed", "filename", filename, "err", err)
+	    } else {
+                n, err := client.PutObject(bucket, name, br, int64(br.Len()), put_opts)
+		if  err != nil {
+		    sg.Errorw("Upload failed", "filename", filename, "err", err)
+		} else {
+		    sg.Infow("Uploaded file:", "filename", filename, "size", n)
+		    remove_file = true
+		}
+	    }
+	}
+
+	err = f.Close()
+	if err != nil {
+	    sg.Errorw("Error closing file", "filename", filename, "err", err)
 	} else {
-	    sg.Errorw("Upload failed", "filename", filename, "err", err)
-	}
-
-	if err == nil && enc_err == nil {
-	    err = os.Remove(filename)
-            if err != nil {
-                sg.Errorw("Removing input file failed", "filename", filename,
-                          "err", err)
-            }
+	    if remove_file {
+		err = os.Remove(filename)
+		if err != nil {
+		    sg.Errorw("Removing input file failed", "filename", filename,
+			      "err", err)
+		}
+	    }
 	}
 
 
