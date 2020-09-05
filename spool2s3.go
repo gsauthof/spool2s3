@@ -17,6 +17,7 @@ import (
     "time"
 
     "golang.org/x/crypto/openpgp"
+    "golang.org/x/crypto/openpgp/packet"
 
     "github.com/fsnotify/fsnotify"
     "github.com/jessevdk/go-flags"
@@ -41,6 +42,8 @@ type args struct {
     File_key string `long:"file-key" env:"file_key" description:"file encryption key - supply it via an environment variable for security reasons"`
 
     Poll_min int `long:"poll" value-name:"MINUTES" default:"15" description:"check every n minutes for new files in case a file creation notification was lost"`
+
+    Compress bool `long:"compress" short:"z" description:"compress files during encryption"`
 }
 
 func parse_args() *args {
@@ -172,12 +175,21 @@ func period_scan_dir(sg *zap.SugaredLogger, c <-chan time.Time, dir string, file
     }
 }
 
-func encrypt(f io.Reader, filename, file_key string) (*bytes.Buffer, error) {
+func encrypt(f io.Reader, file_key string, compress bool) (*bytes.Buffer, error) {
 
     ow := new(bytes.Buffer)
 
+    calgo := packet.CompressionNone
+    if compress {
+	calgo = packet.CompressionZIP // gzip
+    }
+
     iw, err := openpgp.SymmetricallyEncrypt(ow, []byte(file_key),
-            &openpgp.FileHints { IsBinary: true }, nil)
+            &openpgp.FileHints { IsBinary: true },
+	    &packet.Config {
+		DefaultCompressionAlgo: calgo,
+		// CompressionConfig: &packet.CompressionConfig{ Level: 9 },
+	    })
     if err != nil {
 	return nil, err
     }
@@ -197,9 +209,19 @@ func encrypt(f io.Reader, filename, file_key string) (*bytes.Buffer, error) {
 }
 
 
-func encryptor(f io.Reader, file_key string, w *io.PipeWriter, errc chan<- error) {
+func encryptor(f io.Reader, file_key string, compress bool, w *io.PipeWriter, errc chan<- error) {
+
+    calgo := packet.CompressionNone
+    if compress {
+	calgo = packet.CompressionZIP // gzip
+    }
+
     iw, err := openpgp.SymmetricallyEncrypt(w, []byte(file_key),
-            &openpgp.FileHints { IsBinary: true }, nil)
+            &openpgp.FileHints { IsBinary: true },
+	    &packet.Config {
+		DefaultCompressionAlgo: calgo,
+		// CompressionConfig: &packet.CompressionConfig{ Level: 9 },
+	    })
     if err != nil {
 	w.CloseWithError(err)
 	errc <-err
@@ -239,7 +261,7 @@ func mk_obj_name(hostname string, label string) string{
     return name
 }
 
-func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_key string, client *minio.Client, bucket string) {
+func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_key string, compress bool, client *minio.Client, bucket string) {
     hostname, err := os.Hostname()
     if err != nil {
 	sg.Fatalw("Can't get hostname", "err", err)
@@ -278,7 +300,7 @@ func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_
 	    pr, pw := io.Pipe()
 
 	    enc_err_c := make(chan error)
-	    go encryptor(f, file_key, pw, enc_err_c)
+	    go encryptor(f, file_key, compress, pw, enc_err_c)
 
             n, err := client.PutObject(bucket, name, pr, -1, put_opts)
 
@@ -298,7 +320,7 @@ func spooler(sg *zap.SugaredLogger, done chan bool, filenames chan string, file_
 	    }
 
         } else {
-	    br, err := encrypt(f, filename, file_key)
+	    br, err := encrypt(f, file_key, compress)
 	    if err != nil {
 		sg.Errorw("Encryption failed", "filename", filename, "err", err)
 	    } else {
@@ -379,7 +401,7 @@ func main() {
     done      := make(chan bool)
     filenames := make(chan string)
     start_event_loop(sg, watcher, filenames)
-    go spooler(sg, done, filenames, args.File_key, client, args.Bucket)
+    go spooler(sg, done, filenames, args.File_key, args.Compress, client, args.Bucket)
 
     go period_scan_dir(sg, ticker.C, dir, filenames)
 
