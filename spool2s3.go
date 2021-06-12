@@ -5,6 +5,7 @@ package main
 
 import (
     "bytes"
+    "context"
     "errors"
     "io"
     "io/ioutil"
@@ -22,6 +23,9 @@ import (
     "github.com/fsnotify/fsnotify"
     "github.com/jessevdk/go-flags"
     "github.com/minio/minio-go"
+    "github.com/minio/minio-go/pkg/credentials"
+    // "github.com/minio/minio-go/v7"
+    // "github.com/minio/minio-go/v7/pkg/credentials"
     "github.com/coreos/go-systemd/daemon"
 
     "go.uber.org/zap"
@@ -302,7 +306,7 @@ func spooler(sg *zap.SugaredLogger, done chan<- bool, filenames <-chan string, f
 	    enc_err_c := make(chan error)
 	    go encryptor(f, file_key, compress, pw, enc_err_c)
 
-            n, err := client.PutObject(bucket, name, pr, -1, put_opts)
+            n, err := client.PutObject(context.Background(), bucket, name, pr, -1, put_opts)
 
 	    // make sure that encryptor terminates in case not real all writes
 	    // were consumed by upload_file - if they were this is a NOP
@@ -324,7 +328,7 @@ func spooler(sg *zap.SugaredLogger, done chan<- bool, filenames <-chan string, f
 	    if err != nil {
 		sg.Errorw("Encryption failed", "filename", filename, "err", err)
 	    } else {
-                n, err := client.PutObject(bucket, name, br, int64(br.Len()), put_opts)
+                n, err := client.PutObject(context.Background(), bucket, name, br, int64(br.Len()), put_opts)
 		if  err != nil {
 		    sg.Errorw("Upload failed", "filename", filename, "err", err)
 		} else {
@@ -379,7 +383,10 @@ func main() {
     defer lg.Sync()
     sg     := lg.Sugar()
 
-    client, err := minio.New(args.Endpoint, args.Key_id, args.Key, true)
+    client, err := minio.New(args.Endpoint, &minio.Options {
+            Creds: credentials.NewStaticV4(args.Key_id, args.Key, ""), // i.e. token=""
+            Secure: true,
+    })
     if err != nil {
         sg.Fatalw("Can't connect", "err", err, "endpoint", args.Endpoint,
                         "key_id", args.Key_id)
