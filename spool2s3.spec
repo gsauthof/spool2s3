@@ -2,9 +2,14 @@
 
 %undefine _missing_build_ids_terminate_build
 
+# fix
+# error: Empty %files file /builddir/build/BUILD/spool2s3/debugsourcefiles.list
+# on rawhide
+%global debug_package %{nil}
+
 Name:       spool2s3
 Version:    0.6.0
-Release:    2%{?dist}
+Release:    3%{?dist}
 Summary:    Continuously spool directory to S3.
 URL:        https://github.com/gsauthof/spool2s3
 License:    GPLv3+
