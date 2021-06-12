@@ -4,7 +4,7 @@
 
 Name:       spool2s3
 Version:    0.6.0
-Release:    1%{?dist}
+Release:    2%{?dist}
 Summary:    Continuously spool directory to S3.
 URL:        https://github.com/gsauthof/spool2s3
 License:    GPLv3+
@@ -27,7 +27,7 @@ Watch a directory, encrypt its files and spool them to an S3 bucket.
 %endif
 
 %build
-GOPATH=$HOME/go:/usr/share/gocode go build
+GO111MODULE=off GOPATH=$HOME/go:/usr/share/gocode go build
 
 %install
 mkdir -p %{buildroot}/usr/bin
