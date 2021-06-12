@@ -3,7 +3,7 @@
 %undefine _missing_build_ids_terminate_build
 
 Name:       spool2s3
-Version:    0.5.0
+Version:    0.6.0
 Release:    1%{?dist}
 Summary:    Continuously spool directory to S3.
 URL:        https://github.com/gsauthof/spool2s3
