@@ -306,7 +306,7 @@ func spooler(sg *zap.SugaredLogger, done chan<- bool, filenames <-chan string, f
 	    enc_err_c := make(chan error)
 	    go encryptor(f, file_key, compress, pw, enc_err_c)
 
-            n, err := client.PutObject(context.Background(), bucket, name, pr, -1, put_opts)
+            info, err := client.PutObject(context.Background(), bucket, name, pr, -1, put_opts)
 
 	    // make sure that encryptor terminates in case not real all writes
 	    // were consumed by upload_file - if they were this is a NOP
@@ -317,7 +317,7 @@ func spooler(sg *zap.SugaredLogger, done chan<- bool, filenames <-chan string, f
 		sg.Errorw("Encryption failed", "filename", filename, "err", enc_err)
 	    }
 	    if err == nil {
-		sg.Infow("Uploaded file:", "filename", filename, "size", n)
+		sg.Infow("Uploaded file:", "filename", filename, "size", info.Size)
 		remove_file = true
 	    } else {
 		sg.Errorw("Upload failed", "filename", filename, "err", err)
@@ -328,11 +328,11 @@ func spooler(sg *zap.SugaredLogger, done chan<- bool, filenames <-chan string, f
 	    if err != nil {
 		sg.Errorw("Encryption failed", "filename", filename, "err", err)
 	    } else {
-                n, err := client.PutObject(context.Background(), bucket, name, br, int64(br.Len()), put_opts)
+                info, err := client.PutObject(context.Background(), bucket, name, br, int64(br.Len()), put_opts)
 		if  err != nil {
 		    sg.Errorw("Upload failed", "filename", filename, "err", err)
 		} else {
-		    sg.Infow("Uploaded file:", "filename", filename, "size", n)
+		    sg.Infow("Uploaded file:", "filename", filename, "size", info.Size)
 		    remove_file = true
 		}
 	    }
