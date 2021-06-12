@@ -325,23 +325,21 @@ func spooler(sg *zap.SugaredLogger, done chan<- bool, filenames <-chan string, f
 
         } else {
 	    br, err := encrypt(f, file_key, compress)
-	    if err != nil {
-		sg.Errorw("Encryption failed", "filename", filename, "err", err)
-	    } else {
+	    if err == nil {
                 info, err := client.PutObject(context.Background(), bucket, name, br, int64(br.Len()), put_opts)
-		if  err != nil {
-		    sg.Errorw("Upload failed", "filename", filename, "err", err)
-		} else {
+		if  err == nil {
 		    sg.Infow("Uploaded file:", "filename", filename, "size", info.Size)
 		    remove_file = true
+		} else {
+		    sg.Errorw("Upload failed", "filename", filename, "err", err)
 		}
+	    } else {
+		sg.Errorw("Encryption failed", "filename", filename, "err", err)
 	    }
 	}
 
 	err = f.Close()
-	if err != nil {
-	    sg.Errorw("Error closing file", "filename", filename, "err", err)
-	} else {
+	if err == nil {
 	    if remove_file {
 		err = os.Remove(filename)
 		if err != nil {
@@ -349,6 +347,8 @@ func spooler(sg *zap.SugaredLogger, done chan<- bool, filenames <-chan string, f
 			      "err", err)
 		}
 	    }
+	} else {
+	    sg.Errorw("Error closing file", "filename", filename, "err", err)
 	}
 
 

@@ -8,8 +8,8 @@
 %global debug_package %{nil}
 
 Name:       spool2s3
-Version:    0.6.0
-Release:    3%{?dist}
+Version:    0.6.1
+Release:    1%{?dist}
 Summary:    Continuously spool directory to S3.
 URL:        https://github.com/gsauthof/spool2s3
 License:    GPLv3+
